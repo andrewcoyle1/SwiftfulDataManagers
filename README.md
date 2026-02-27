@@ -56,12 +56,17 @@ Use `DocumentSyncEngine` when managing **a single document** (e.g., current user
 
 Use `CollectionSyncEngine` when managing **a list of documents** (e.g., products, messages, watchlist items). The collection bulk loads all documents and streams individual changes.
 
+Use `CollectionGroupSyncEngine` when querying **across multiple sub-collections** (e.g., all reviews across all products, all comments across all posts). Read-only — no write operations.
+
 ```swift
 // Single document — one user profile
 let userSyncEngine = DocumentSyncEngine<UserModel>(...)
 
 // Collection of documents — list of products
 let productsSyncEngine = CollectionSyncEngine<Product>(...)
+
+// Cross-collection query — all reviews across all products
+let reviewsSyncEngine = CollectionGroupSyncEngine<Review>(...)
 ```
 
 ## DocumentSyncEngine
@@ -243,6 +248,109 @@ struct ProductListView: View {
     var body: some View {
         ForEach(engine.currentCollection) { product in
             Text(product.name)
+        }
+    }
+}
+```
+
+</details>
+
+## CollectionGroupSyncEngine
+
+<details>
+<summary> Details (Click to expand) </summary>
+<br>
+
+`CollectionGroupSyncEngine` queries across multiple sub-collections — for example, all `reviews` documents nested under any `product` in Firestore. It is **read-only**: use `CollectionSyncEngine` when you also need write operations.
+
+### Create
+
+```swift
+let engine = CollectionGroupSyncEngine<Review>(
+    remote: FirebaseRemoteCollectionGroupService(groupName: "reviews"),
+    managerKey: "reviews",
+    enableLocalPersistence: true,
+    logger: logManager
+)
+```
+
+### Start / Stop Listening
+
+`startListening()` performs the same hybrid sync as `CollectionSyncEngine`: bulk loads all matching documents, then streams individual changes. An optional `buildQuery` closure filters the group.
+
+```swift
+// Start listening — all documents in the collection group
+await engine.startListening()
+
+// Start listening — filtered
+await engine.startListening { query in
+    query.where("rating", isGreaterThan: 3)
+}
+
+// Calling again with the same query is a no-op
+// Calling with a different query restarts the listener automatically
+
+// Stop and clear cached data
+engine.stopListening()
+
+// Stop but keep cached data
+engine.stopListening(clearCaches: false)
+```
+
+### Read
+
+```swift
+// Sync — from cache (requires startListening or local persistence, otherwise returns empty)
+let reviews = engine.currentCollection
+let reviews = engine.getCollection()
+let highRated = engine.getDocuments(where: { $0.rating > 3 })
+
+// Async — always fetches from remote using a query
+let results = try await engine.getDocumentsAsync(buildQuery: { query in
+    query
+        .where("rating", isGreaterThan: 3)
+        .order(by: "createdAt", descending: true)
+})
+```
+
+### Streaming
+
+```swift
+// Stream real-time snapshots (returns full filtered array on each change)
+let stream = engine.streamCollection { query in
+    query.where("rating", isGreaterThan: 3)
+}
+for try await reviews in stream {
+    print("Updated reviews: \(reviews.count)")
+}
+
+// Stream individual updates and deletions
+let (updates, deletions) = engine.streamCollectionUpdates { query in
+    query.where("rating", isGreaterThan: 3)
+}
+
+Task {
+    for try await review in updates {
+        print("Updated: \(review.id)")
+    }
+}
+
+Task {
+    for try await deletedId in deletions {
+        print("Deleted: \(deletedId)")
+    }
+}
+```
+
+### Observable
+
+```swift
+struct ReviewListView: View {
+    let engine: CollectionGroupSyncEngine<Review>
+
+    var body: some View {
+        ForEach(engine.currentCollection) { review in
+            Text(review.text)
         }
     }
 }
@@ -434,6 +542,13 @@ let engine = CollectionSyncEngine<Product>(
     managerKey: "test",
     enableLocalPersistence: false
 )
+
+// Mock collection group
+let engine = CollectionGroupSyncEngine<Review>(
+    remote: MockRemoteCollectionGroupService(collection: Review.mocks),
+    managerKey: "test",
+    enableLocalPersistence: false
+)
 ```
 
 ### Available Mocks
@@ -442,6 +557,7 @@ let engine = CollectionSyncEngine<Product>(
 // Remote services
 MockRemoteDocumentService<T>(document: T? = nil)
 MockRemoteCollectionService<T>(collection: [T] = [])
+MockRemoteCollectionGroupService<T>(collection: [T] = [])
 
 // Local persistence (for custom implementations)
 MockLocalDocumentPersistence<T>(document: T? = nil)
