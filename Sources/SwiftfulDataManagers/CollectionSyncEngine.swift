@@ -131,7 +131,7 @@ public final class CollectionSyncEngine<T: DataSyncModelProtocol> {
         if queryChanged {
             logger?.trackEvent(event: Event.queryChanged(key: managerKey, filterCount: newQuery?.getFilters().count ?? 0))
             stopListener()
-            currentCollection = []
+//            currentCollection = []
         }
 
         currentQuery = newQuery
