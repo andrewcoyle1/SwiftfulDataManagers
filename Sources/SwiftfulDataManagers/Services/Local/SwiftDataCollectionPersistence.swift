@@ -20,8 +20,19 @@ public final class SwiftDataCollectionPersistence<T: DataSyncModelProtocol>: Loc
 
     public init(managerKey: String) {
         self.managerKey = managerKey
+        // Each managerKey gets its own store file so collections of different types
+        // never share a container and getCollection cannot return cross-type entries.
+        let storeURL = Self.storeURL(for: managerKey)
+        let config = ModelConfiguration(managerKey, url: storeURL)
         // swiftlint:disable:next force_try
-        self.container = try! ModelContainer(for: DocumentEntity.self)
+        self.container = try! ModelContainer(for: DocumentEntity.self, configurations: config)
+    }
+
+    private static func storeURL(for managerKey: String) -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let directory = appSupport.appendingPathComponent("SwiftfulDataManagers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("\(managerKey).store")
     }
 
     public func getCollection(managerKey: String) throws -> [T] {

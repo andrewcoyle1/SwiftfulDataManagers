@@ -109,6 +109,8 @@ public final class DocumentSyncEngine<T: DataSyncModelProtocol> {
     ///
     /// - Parameter documentId: The document ID to listen to.
     public func startListening(documentId: String) async throws {
+        guard !documentId.isEmpty else { return }
+
         // If documentId is changing, stop old listener first
         if self.documentId != documentId {
             stopListening()
