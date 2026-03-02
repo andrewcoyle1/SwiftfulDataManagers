@@ -309,9 +309,7 @@ public final class CollectionGroupSyncEngine<T: DataSyncModelProtocol> {
                 }
 
                 // Save to local persistence
-                Task {
-                    try? await local?.saveCollection(managerKey: managerKey, currentCollection)
-                }
+                try? local?.saveDocument(managerKey: managerKey, document)
             }
         } catch {
             logger?.trackEvent(event: Event.listenerFail(key: managerKey, error: error))
@@ -340,9 +338,7 @@ public final class CollectionGroupSyncEngine<T: DataSyncModelProtocol> {
                 currentCollection.removeAll { $0.id == documentId }
 
                 // Save to local persistence
-                Task {
-                    try? await local?.saveCollection(managerKey: managerKey, currentCollection)
-                }
+                try? local?.deleteDocument(managerKey: managerKey, id: documentId)
             }
         } catch {
             logger?.trackEvent(event: Event.listenerFail(key: managerKey, error: error))
