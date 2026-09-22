@@ -16,6 +16,13 @@ public final class MockRemoteDocumentService<T: DataSyncModelProtocol>: RemoteDo
     private var currentDocument: T?
     private var continuation: AsyncThrowingStream<T?, Error>.Continuation?
 
+    /// Identifies which stream owns `continuation`. A terminated stream must only clear the slot
+    /// if it still holds its own continuation: registration and termination both hop to the main
+    /// actor, so a listener stopped and immediately restarted — as `DocumentSyncEngine.deleteDocument`
+    /// does — can otherwise have the old stream's termination wipe the new stream's continuation,
+    /// leaving later `saveDocument` yields with nowhere to go.
+    private var continuationGeneration: Int = 0
+
     // MARK: - Initialization
 
     public nonisolated init(document: T? = nil) {
@@ -53,11 +60,14 @@ public final class MockRemoteDocumentService<T: DataSyncModelProtocol>: RemoteDo
     public nonisolated func streamDocument(id: String) -> AsyncThrowingStream<T?, Error> {
         AsyncThrowingStream { continuation in
             Task { @MainActor in
+                self.continuationGeneration += 1
+                let generation = self.continuationGeneration
                 self.continuation = continuation
                 continuation.yield(self.currentDocument)
 
                 continuation.onTermination = { @Sendable _ in
                     Task { @MainActor in
+                        guard self.continuationGeneration == generation else { return }
                         self.continuation = nil
                     }
                 }
