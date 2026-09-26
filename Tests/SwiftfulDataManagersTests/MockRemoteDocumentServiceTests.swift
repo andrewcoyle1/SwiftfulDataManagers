@@ -83,6 +83,25 @@ struct MockRemoteDocumentServiceTests {
         #expect(received?.title == "later")
     }
 
+    /// Presenters route on the engine's `currentDocument` straight after an update returns, so
+    /// the stream must have carried the update before `updateDocument` comes back.
+    @Test("A listener holds the update by the time updateDocument returns")
+    func testListenerHoldsUpdateWhenUpdateReturns() async throws {
+        let remote = MockRemoteDocumentService<TestItem>(document: TestItem(id: "item-1", title: "original"))
+        var received: TestItem?
+        let listener = Task {
+            for try await document in remote.streamDocument(id: "item-1") {
+                received = document
+            }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        try await remote.updateDocument(id: "item-1", data: ["title": "later"])
+        listener.cancel()
+
+        #expect(received?.title == "later")
+    }
+
     /// A delete clears the stored document, and a stream attached afterwards must still report
     /// what is saved next — the end of the same path, without depending on task interleaving.
     @Test("A stream attached after a delete receives the next save")

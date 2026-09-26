@@ -64,15 +64,16 @@ public final class MockRemoteCollectionService<T: DataSyncModelProtocol>: Remote
     }
 
     public func updateDocument(id: String, data: [String: any DMCodableSendable]) async throws {
-        try await Task.sleep(for: .seconds(0.5))
-
         guard let index = currentCollection.firstIndex(where: { $0.id == id }) else {
             throw MockError.documentNotFound
         }
 
         let updated = try MockRemoteFieldMerge.apply(data, to: currentCollection[index])
         currentCollection[index] = updated
+        // Yield before the simulated latency, as Firestore's local listener fires before the
+        // server acknowledges: callers that read the engine straight after `await` see the update.
         updatesContinuation?.yield(updated)
+        try await Task.sleep(for: .seconds(0.5))
     }
 
     public nonisolated func streamCollection() -> AsyncThrowingStream<[T], Error> {
