@@ -9,6 +9,9 @@ import Foundation
 import Testing
 @testable import SwiftfulDataManagers
 
+// The app extends `Date` the same way; the package itself does not.
+extension Date: DMCodableSendable {}
+
 @Suite("MockRemoteDocumentService Tests")
 @MainActor
 struct MockRemoteDocumentServiceTests {
@@ -18,6 +21,24 @@ struct MockRemoteDocumentServiceTests {
     struct TestItem: DataSyncModelProtocol {
         let id: String
         var title: String
+        var count: Int? = nil
+        var updatedAt: Date? = nil
+    }
+
+    /// `updateDocument` used to re-yield the stored document untouched, so a field written
+    /// through it never changed and the engine's `currentDocument` stayed as it was. The mock
+    /// now merges the fields in, as Firestore does, including a `Date`.
+    @Test("An update merges its fields into the stored document")
+    func testUpdateMergesFieldsIntoStoredDocument() async throws {
+        let remote = MockRemoteDocumentService<TestItem>(document: TestItem(id: "item-1", title: "original"))
+        let when = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try await remote.updateDocument(id: "item-1", data: ["title": "later", "count": 3, "updatedAt": when])
+
+        let stored = try await remote.getDocument(id: "item-1")
+        #expect(stored.title == "later")
+        #expect(stored.count == 3)
+        #expect(stored.updatedAt == when)
     }
 
     // MARK: - Tests

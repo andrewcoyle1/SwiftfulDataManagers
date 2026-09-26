@@ -66,11 +66,13 @@ public final class MockRemoteCollectionService<T: DataSyncModelProtocol>: Remote
     public func updateDocument(id: String, data: [String: any DMCodableSendable]) async throws {
         try await Task.sleep(for: .seconds(0.5))
 
-        guard let document = currentCollection.first(where: { $0.id == id }) else {
+        guard let index = currentCollection.firstIndex(where: { $0.id == id }) else {
             throw MockError.documentNotFound
         }
 
-        updatesContinuation?.yield(document)
+        let updated = try MockRemoteFieldMerge.apply(data, to: currentCollection[index])
+        currentCollection[index] = updated
+        updatesContinuation?.yield(updated)
     }
 
     public nonisolated func streamCollection() -> AsyncThrowingStream<[T], Error> {
