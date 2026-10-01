@@ -58,8 +58,11 @@ public final class CollectionSyncEngine<T: DataSyncModelProtocol> {
 
     // MARK: - Private Properties
 
-    private var updatesListenerTask: Task<Void, Never>?
-    private var deletionsListenerTask: Task<Void, Never>?
+    private var listenerTask: Task<Void, Never>?
+    /// Local saves, one after another: see `persist(_:)`.
+    private var persistenceTask: Task<Void, Never>?
+    /// Held by `startListening()` until the listener's first batch has been applied.
+    private var firstBatchWaiter: CheckedContinuation<Void, Never>?
     private var pendingWrites: [PendingWrite] = []
     private var listenerFailedToAttach: Bool = false
     private var listenerRetryCount: Int = 0
@@ -123,7 +126,7 @@ public final class CollectionSyncEngine<T: DataSyncModelProtocol> {
         // If query hasn't changed and listener is already running, no-op
         let queryChanged = newQuery != currentQuery
 
-        if !queryChanged && (updatesListenerTask != nil || deletionsListenerTask != nil) {
+        if !queryChanged && listenerTask != nil {
             return
         }
 
@@ -136,16 +139,17 @@ public final class CollectionSyncEngine<T: DataSyncModelProtocol> {
 
         currentQuery = newQuery
 
-        logger?.trackEvent(event: Event.listenerStart(key: managerKey))
-
         // Sync pending writes if enabled and available
         if enableLocalPersistence && !pendingWrites.isEmpty {
             await syncPendingWrites()
         }
 
-        // Hybrid sync: Bulk load all documents, then stream changes
-        await bulkLoadCollection()
-        startListener()
+        // The listener's first batch is the whole collection, so there is no separate bulk load.
+        // Callers still get a loaded collection when this returns, as they did with one.
+        await withCheckedContinuation { continuation in
+            firstBatchWaiter = continuation
+            startListener()
+        }
     }
 
     /// Stop listening for real-time updates.
@@ -163,9 +167,7 @@ public final class CollectionSyncEngine<T: DataSyncModelProtocol> {
 
             // Clear local persistence
             if enableLocalPersistence {
-                Task {
-                    try? await local?.saveCollection(managerKey: managerKey, [])
-                }
+                persist { local, key in try await local.saveCollection(managerKey: key, []) }
                 try? local?.savePendingWrites(managerKey: managerKey, [])
             }
 
@@ -467,34 +469,35 @@ public final class CollectionSyncEngine<T: DataSyncModelProtocol> {
         }
     }
 
-    // MARK: - Private: Collection Update Handler
+    // MARK: - Private: Applying Changes
 
-    private func handleCollectionUpdate(_ collection: [T]) {
-        currentCollection = collection
-
-        Task {
-            try? await local?.saveCollection(managerKey: managerKey, collection)
+    /// Applies one listener batch with a single assignment, so observers see one change however
+    /// many documents it holds, and a single local save.
+    private func apply(_ changes: CollectionChanges<T>) {
+        guard !changes.isEmpty else { return }
+        currentCollection = changes.applied(to: currentCollection)
+        if changes.isComplete {
+            logger?.trackEvent(event: Event.collectionUpdated(key: managerKey, count: currentCollection.count))
         }
-        logger?.trackEvent(event: Event.collectionUpdated(key: managerKey, count: collection.count))
+        persist { local, key in try await local.applyChanges(managerKey: key, changes) }
     }
 
-    // MARK: - Private: Bulk Load
-
-    private func bulkLoadCollection() async {
-        logger?.trackEvent(event: Event.bulkLoadStart(key: managerKey))
-
-        do {
-            let collection: [T]
-            if let query = currentQuery {
-                collection = try await remote.getDocuments(query: query)
-            } else {
-                collection = try await remote.getCollection()
-            }
-            handleCollectionUpdate(collection)
-            logger?.trackEvent(event: Event.bulkLoadSuccess(key: managerKey, count: collection.count))
-        } catch {
-            logger?.trackEvent(event: Event.bulkLoadFail(key: managerKey, error: error))
+    /// Queues a local write behind the previous one. The SwiftData saves run in background
+    /// contexts, and two at once could land out of order: a sign-out's clear before the last
+    /// batch's save, say.
+    private func persist(_ write: @escaping @MainActor (any LocalCollectionPersistence<T>, String) async throws -> Void) {
+        guard let local else { return }
+        let key = managerKey
+        let previous = persistenceTask
+        persistenceTask = Task { @MainActor in
+            await previous?.value
+            try? await write(local, key)
         }
+    }
+
+    private func resumeFirstBatchWaiter() {
+        firstBatchWaiter?.resume()
+        firstBatchWaiter = nil
     }
 
     // MARK: - Private: Listener
@@ -505,45 +508,30 @@ public final class CollectionSyncEngine<T: DataSyncModelProtocol> {
 
         stopListener()
 
-        let (updates, deletions): (AsyncThrowingStream<T, Error>, AsyncThrowingStream<String, Error>)
-        if let query = currentQuery {
-            (updates, deletions) = remote.streamCollectionUpdates(query: query)
-        } else {
-            (updates, deletions) = remote.streamCollectionUpdates()
-        }
-
-        updatesListenerTask = Task { @MainActor in
-            await handleCollectionUpdates(updates)
-        }
-
-        deletionsListenerTask = Task { @MainActor in
-            await handleCollectionDeletions(deletions)
+        let changes = remote.streamCollectionChanges(query: currentQuery)
+        listenerTask = Task { @MainActor in
+            await handleCollectionChanges(changes)
         }
     }
 
-    private func handleCollectionUpdates(_ updates: AsyncThrowingStream<T, Error>) async {
-        var isFirstUpdate = true
+    private func handleCollectionChanges(_ stream: AsyncThrowingStream<CollectionChanges<T>, Error>) async {
+        // However the stream ends, `startListening()` must not wait for ever.
+        defer { resumeFirstBatchWaiter() }
+        var isFirstBatch = true
 
         do {
-            for try await document in updates {
+            for try await changes in stream {
                 // Reset retry count on successful connection
                 self.listenerRetryCount = 0
 
-                // Log success only on first update (listener connected successfully)
-                if isFirstUpdate {
+                apply(changes)
+
+                // Log success only on the first batch (listener connected successfully)
+                if isFirstBatch {
                     logger?.trackEvent(event: Event.listenerSuccess(key: managerKey, count: currentCollection.count))
-                    isFirstUpdate = false
+                    isFirstBatch = false
+                    resumeFirstBatchWaiter()
                 }
-
-                // Update or add document in collection
-                if let index = currentCollection.firstIndex(where: { $0.id == document.id }) {
-                    currentCollection[index] = document
-                } else {
-                    currentCollection.append(document)
-                }
-
-                // Save to local persistence
-                try? local?.saveDocument(managerKey: managerKey, document)
             }
         } catch {
             logger?.trackEvent(event: Event.listenerFail(key: managerKey, error: error))
@@ -566,26 +554,9 @@ public final class CollectionSyncEngine<T: DataSyncModelProtocol> {
         }
     }
 
-    private func handleCollectionDeletions(_ deletions: AsyncThrowingStream<String, Error>) async {
-        do {
-            for try await documentId in deletions {
-                // Remove document from collection
-                currentCollection.removeAll { $0.id == documentId }
-
-                // Save to local persistence
-                try? local?.deleteDocument(managerKey: managerKey, id: documentId)
-            }
-        } catch {
-            logger?.trackEvent(event: Event.listenerFail(key: managerKey, error: error))
-            self.listenerFailedToAttach = true
-        }
-    }
-
     private func stopListener() {
-        updatesListenerTask?.cancel()
-        updatesListenerTask = nil
-        deletionsListenerTask?.cancel()
-        deletionsListenerTask = nil
+        listenerTask?.cancel()
+        listenerTask = nil
         listenerRetryTask?.cancel()
         listenerRetryTask = nil
         listenerRetryCount = 0
