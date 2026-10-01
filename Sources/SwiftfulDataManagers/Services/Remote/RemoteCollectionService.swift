@@ -91,4 +91,23 @@ public protocol RemoteCollectionService<T>: Sendable {
         updates: AsyncThrowingStream<T, Error>,
         deletions: AsyncThrowingStream<String, Error>
     )
+
+    /// Stream the collection, or the documents matching `query`, as one batch per snapshot. The
+    /// first batch is complete. This is what `CollectionSyncEngine` listens with.
+    ///
+    /// The default fetches once and then forwards `streamCollectionUpdates` a document at a time;
+    /// a backend that can deliver whole snapshots should implement it.
+    func streamCollectionChanges(query: QueryBuilder?) -> AsyncThrowingStream<CollectionChanges<T>, Error>
+}
+
+extension RemoteCollectionService {
+    public func streamCollectionChanges(query: QueryBuilder?) -> AsyncThrowingStream<CollectionChanges<T>, Error> {
+        collectionChangesStream(
+            fetchAll: {
+                if let query { return try await getDocuments(query: query) }
+                return try await getCollection()
+            },
+            streamUpdates: { query.map { streamCollectionUpdates(query: $0) } ?? streamCollectionUpdates() }
+        )
+    }
 }

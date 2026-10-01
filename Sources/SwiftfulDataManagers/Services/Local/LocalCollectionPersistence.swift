@@ -72,4 +72,24 @@ public protocol LocalCollectionPersistence<T>: Sendable {
     /// - Parameter managerKey: The key identifying this manager
     /// - Throws: Error if clear fails
     func clearPendingWrites(managerKey: String) throws
+
+    /// Apply one listener batch: replace everything when it is complete, otherwise upsert and
+    /// delete. The default goes through the per-document methods; an implementation should do it
+    /// in a single save.
+    func applyChanges(managerKey: String, _ changes: CollectionChanges<T>) async throws
+}
+
+extension LocalCollectionPersistence {
+    public func applyChanges(managerKey: String, _ changes: CollectionChanges<T>) async throws {
+        if changes.isComplete {
+            try await saveCollection(managerKey: managerKey, changes.upserted)
+            return
+        }
+        for document in changes.upserted {
+            try saveDocument(managerKey: managerKey, document)
+        }
+        for id in changes.deletedIds {
+            try deleteDocument(managerKey: managerKey, id: id)
+        }
+    }
 }

@@ -17,5 +17,18 @@ public protocol RemoteCollectionGroupService<T>: Sendable {
         updates: AsyncThrowingStream<T, Error>,
         deletions: AsyncThrowingStream<String, Error>
     )
+
+    /// Stream the documents matching `query` as one batch per snapshot, the first complete.
+    /// See `RemoteCollectionService.streamCollectionChanges(query:)`.
+    func streamCollectionChanges(query: QueryBuilder) -> AsyncThrowingStream<CollectionChanges<T>, Error>
+}
+
+extension RemoteCollectionGroupService {
+    public func streamCollectionChanges(query: QueryBuilder) -> AsyncThrowingStream<CollectionChanges<T>, Error> {
+        collectionChangesStream(
+            fetchAll: { try await getDocuments(query: query) },
+            streamUpdates: { streamCollectionUpdates(query: query) }
+        )
+    }
 }
 

@@ -64,6 +64,30 @@ public final class SwiftDataCollectionPersistence<T: DataSyncModelProtocol>: Loc
         try backgroundContext.save()
     }
 
+    /// One listener batch in one background save, off the main actor. Upserted documents replace
+    /// their stored entities, which `@Attribute(.unique)` on `id` would otherwise reject.
+    nonisolated public func applyChanges(managerKey: String, _ changes: CollectionChanges<T>) async throws {
+        let backgroundContext = ModelContext(container)
+
+        let replaced: [DocumentEntity]
+        if changes.isComplete {
+            replaced = try backgroundContext.fetch(FetchDescriptor<DocumentEntity>())
+        } else {
+            let ids = changes.deletedIds + changes.upserted.map(\.id)
+            guard !ids.isEmpty else { return }
+            replaced = try backgroundContext.fetch(
+                FetchDescriptor<DocumentEntity>(predicate: #Predicate { ids.contains($0.id) })
+            )
+        }
+        for entity in replaced {
+            backgroundContext.delete(entity)
+        }
+        for document in changes.upserted {
+            backgroundContext.insert(try DocumentEntity.from(document))
+        }
+        try backgroundContext.save()
+    }
+
     public func saveDocument(managerKey: String, _ document: T) throws {
         // Check if document already exists
         let descriptor = FetchDescriptor<DocumentEntity>(
