@@ -12,7 +12,7 @@ extension FileManager {
     static func saveDocument<T: Codable>(key: String, value: T?) throws {
         let data = try JSONEncoder().encode(value)
         let url = getDocumentURL(for: key)
-        try data.write(to: url)
+        try data.write(to: url, options: .atomic)
     }
 
     static func getDocument<T: Codable>(key: String) throws -> T? {

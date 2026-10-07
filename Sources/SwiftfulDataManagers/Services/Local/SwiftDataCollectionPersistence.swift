@@ -125,7 +125,7 @@ public final class SwiftDataCollectionPersistence<T: DataSyncModelProtocol>: Loc
         let fileURL = pendingWritesFileURL(managerKey: managerKey)
         let dictionaries = writes.map { $0.toDictionary() }
         let data = try JSONSerialization.data(withJSONObject: dictionaries)
-        try data.write(to: fileURL)
+        try data.write(to: fileURL, options: .atomic)
     }
 
     public func getPendingWrites(managerKey: String) throws -> [PendingWrite] {
